@@ -535,7 +535,7 @@ def _uninstall(paths, dry_run):
         if retained:
             save_json(path, dict(data, Profiles=retained), backup, previous)
         else:
-            backup.mkdir(parents=True, mode=0o700)
+            backup.mkdir(parents=True, exist_ok=True, mode=0o700)
             if path.read_text() != previous:
                 raise RuntimeError("Profiles changed during uninstall; review them before archiving.")
             shutil.move(str(path), str(backup / path.name))

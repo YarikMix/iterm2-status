@@ -51,9 +51,9 @@ class NotificationInstaller(unittest.TestCase):
         self.notifier.write_text('#!/bin/sh\nexit 0\n')
         self.notifier.chmod(0o700)
 
-    def install(self, enable=True, dry_run=False):
+    def install(self, enable=True, dry_run=False, launchers=False):
         args = argparse.Namespace(workspace=None, workspace_name=None, parent_profile=None,
-                                  no_workspace=False, no_launchers=True, dry_run=dry_run,
+                                  no_workspace=False, no_launchers=not launchers, dry_run=dry_run,
                                   notifications=enable, no_notifications=not enable,
                                   terminal_notifier=str(self.notifier))
         # Capability discovery is external to these regressions. run/subprocess
@@ -153,6 +153,24 @@ class NotificationInstaller(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             installer.uninstall(self.paths, False)
         self.assertIs(self.config()['tui']['notifications'], True)
+
+    def test_uninstall_with_notifications_archives_enabled_launchers(self):
+        self.paths['config'].write_text('[tui]\nnotifications = true\n')
+        self.install(launchers=True)
+        profiles_text = self.paths['profiles'].read_text()
+        profiles = json.loads(profiles_text)['Profiles']
+        self.assertTrue(profiles)
+        self.assertTrue(all(profile['Guid'] in installer.OWNED_GUIDS for profile in profiles))
+        self.assertIs(json.loads(self.paths['settings'].read_text())['notifications'], True)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(installer.uninstall(self.paths, False), 0)
+        self.assertIs(self.config()['tui']['notifications'], True)
+        self.assertIs(self.config()['plugins']['iterm2-status@personal']['enabled'], False)
+        self.assertIs(json.loads(self.paths['settings'].read_text())['notifications'], False)
+        self.assertFalse(self.paths['profiles'].exists())
+        archives = list((self.paths['settings'].parent / 'backups').glob('*/codex-profiles.json'))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].read_text(), profiles_text)
 
     def test_user_edit_of_native_notifications_is_preserved_on_disable(self):
         self.paths['config'].write_text('[tui]\nnotifications = true\n')
