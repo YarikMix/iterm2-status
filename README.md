@@ -122,6 +122,52 @@ Start a fresh Codex session and review any changed hooks. Pulling source alone
 cannot update Codex's installed cache. iTerm2 and Codex updates also do not fetch
 plugin updates; update each component separately.
 
+### Optional macOS notifications
+
+Enable banners for input requests, approval requests, and completed responses:
+
+```sh
+python3 install.py --notifications --terminal-notifier /absolute/path/to/terminal-notifier
+```
+
+Use the executable inside `terminal-notifier.app/Contents/MacOS` if a version-manager
+shim cannot run in hook environments. macOS must allow this app's notifications and
+allow the hook interpreter/terminal to automate iTerm2. Notification titles come
+from the originating tab, with the project basename and a generic Russian event
+label. Prompts and tool arguments are not used in banners or stored in the cache.
+The tab title is read only when a notice is pending and is not cached.
+
+Banners are suppressed while the originating tab is visible in the frontmost iTerm
+window, including its split panes. Repeated hooks for the same waiting state or
+completed turn do not resend a banner. Notifications replace the previous banner
+for that terminal UUID. Clicking runs an explicitly targeted session-focus action,
+then activates iTerm2. Completion waits for any already running background agents;
+interrupts and session startup/shutdown do not create completion banners.
+Banner delivery runs in a separate, temporary process with a 10-second timeout.
+Slow application startup can finish after the observational hook has exited;
+it does not consume the hook's three-second budget or block Codex.
+
+The installer backs up and disables Codex's native TUI banners to avoid duplicates.
+`--replace-paiw-notify` additionally removes only the legacy PAIW Codex completion
+notifier registration, preserving all other hooks and the managed PAIW source.
+PAIW updates may restore that registration; rerun this option if duplicates return.
+`--no-launchers` saves a preference to disable this plugin's profiles and preserves
+unrelated profiles. `--replace-source-link` permits repointing an existing source
+symlink to a development checkout; it refuses to replace a real directory.
+Use `--dry-run` to preview these changes. Backups include `hooks.json`, `config.toml`,
+settings and `source-link.json` when changed. To undo notification configuration,
+restore those changed files/link from the printed backup directory and reinstall
+the previous source. Uninstall alone does not restore external hook/TUI preferences.
+
+Fixture tests cover notification selection, concurrency, suppression, click actions,
+and failure timeouts. A live check remains necessary after installing: start Codex
+through your normal shell function, trust `/hooks`, submit a short task, switch to
+another app, and click the completion banner. In a second session, verify an input
+request and an approval, and confirm the click selects the correct tab. Run the
+same events while viewing the tab to verify suppression. A failure to read focus,
+an unknown terminal UUID, or an unavailable notifier produces no banner and never
+affects Codex's decisions or status reporting.
+
 For ZIP installations, extract the new release into the source directory and rerun
 the installer. To roll back a clean Git checkout, use
 `git switch --detach <release-tag>`, then `python3 install.py`. Return with

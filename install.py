@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
-from iterm_support import config_dir, load_settings
+from iterm_support import config_dir, load_settings, executable
 from diagnostics import check, prerequisites, live_check, display
 
 NAME = "iterm2-status"
@@ -52,6 +52,8 @@ def marketplace_config(existing):
 def profile_config(source, settings, previous):
     if not isinstance(previous, dict) or not isinstance(previous.get("Profiles"), list) or not all(isinstance(p, dict) for p in previous["Profiles"]):
         raise ValueError("The existing dynamic profile file is malformed; review it first.")
+    if settings.get("launchers") is False:
+        return dict(previous, Profiles=[p for p in previous["Profiles"] if p.get("Guid") not in OWNED_GUIDS])
     launcher = source / "scripts/launch.zsh"
     shell_command = "exec /bin/zsh " + shlex.quote(str(launcher))
     command = "/bin/zsh -lic " + shlex.quote(shell_command)
@@ -113,11 +115,66 @@ def locations(home, source, environ=None):
             "saved_path": local / "search-path", "config": codex_home / "config.toml"}
 
 
+def without_paiw_notification(existing, home):
+    """Replace only the known completion notifier, never PAIW's source files."""
+    value = json.loads(json.dumps(existing))
+    groups = value.get("hooks", {}).get("Stop", [])
+    if not isinstance(groups, list):
+        raise ValueError("Codex Stop hooks must be an array.")
+    expected = ["node", str(Path(home) / ".paiw/tools/system/hooks/codex/notify-stop.mjs")]
+    retained = []
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            raise ValueError("Codex Stop hook groups must contain a hooks array.")
+        hooks = []
+        for hook in group["hooks"]:
+            if not isinstance(hook, dict):
+                raise ValueError("Codex hooks must be objects.")
+            try:
+                replace = hook.get("type") == "command" and shlex.split(hook.get("command", "")) == expected
+            except ValueError:
+                replace = False
+            if not replace:
+                hooks.append(hook)
+        if hooks:
+            retained.append(dict(group, hooks=hooks))
+    if "Stop" in value.get("hooks", {}):
+        value["hooks"]["Stop"] = retained
+    return value
+
+
+def without_tui_notifications(content):
+    """Keep other TOML text intact and disable duplicate native TUI banners."""
+    lines = content.splitlines(keepends=True)
+    sections = [i for i, line in enumerate(lines) if re.fullmatch(r'\s*\[\s*(?:tui|"tui"|\x27tui\x27)\s*\]\s*(?:#.*)?', line.rstrip('\r\n'))]
+    if len(sections) > 1:
+        raise ValueError("Duplicate [tui] sections; review Codex config before enabling notifications.")
+    if not sections:
+        return content.rstrip('\r\n') + ('\n\n' if content.strip() else '') + '[tui]\nnotifications = false\n'
+    start = sections[0]
+    for i in range(start + 1, len(lines)):
+        if re.match(r'\s*\[', lines[i]):
+            break
+        key = re.match(r'\s*(?:notifications|"notifications"|\x27notifications\x27)\s*=\s*(.*)', lines[i].rstrip('\r\n'))
+        if key:
+            if not re.fullmatch(r'(?:true|false|\[.*\])\s*(?:#.*)?', key[1]):
+                raise ValueError("Use a single-line tui.notifications setting before enabling this integration.")
+            lines[i] = 'notifications = false\n'
+            return ''.join(lines)
+    if not lines[start].endswith('\n'):
+        lines[start] += '\n'
+    lines.insert(start + 1, 'notifications = false\n')
+    return ''.join(lines)
+
+
 def normalized_settings(value):
     if not isinstance(value, dict):
         raise ValueError("Saved settings must be a JSON object.")
     value = dict(value)
-    for name in ["parent_profile", "workspace", "workspace_name", "iterm_app", "codex", "shell"]:
+    for name in ["notifications", "launchers"]:
+        if name in value and not isinstance(value[name], bool):
+            raise ValueError(f"Saved setting {name} must be a boolean.")
+    for name in ["parent_profile", "workspace", "workspace_name", "iterm_app", "codex", "shell", "terminal_notifier"]:
         if name in value and (not isinstance(value[name], str) or not value[name] or
                               any(c in value[name] for c in "\n\r\0")):
             raise ValueError(f"Saved setting {name} must be a nonempty single-line string.")
@@ -184,11 +241,30 @@ def install(paths, args):
     if manifest.get("name") != NAME or not (source / "scripts/status.py").is_file():
         raise ValueError("Run this installer from the complete iterm2-status package.")
     canonical = paths["canonical"]
-    if (canonical.exists() or canonical.is_symlink()) and canonical.resolve() != source:
+    replace_link = bool(getattr(args, "replace_source_link", False) and canonical.is_symlink())
+    if (canonical.exists() or canonical.is_symlink()) and canonical.resolve() != source and not replace_link:
         raise ValueError(f"{canonical} already contains another checkout; keep or move it first.")
+    previous_link = os.readlink(canonical) if canonical.is_symlink() else None
     texts = {key: path.read_text() if path.exists() else None
-             for key, path in paths.items() if key in {"settings", "marketplace", "profiles"}}
+             for key, path in paths.items() if key in {"settings", "marketplace", "profiles", "config"}}
     settings = normalized_settings(json.loads(texts["settings"]) if texts["settings"] else {})
+    if getattr(args, "no_launchers", False):
+        settings["launchers"] = False
+    if getattr(args, "notifications", False):
+        settings["notifications"] = True
+    if getattr(args, "terminal_notifier", None):
+        settings["terminal_notifier"] = str(Path(args.terminal_notifier).expanduser().absolute())
+    if settings.get("notifications"):
+        notifier = executable(settings.get("terminal_notifier") or "terminal-notifier")
+        if not notifier:
+            raise ValueError("Notifications require an executable terminal-notifier; use --terminal-notifier PATH.")
+        settings["terminal_notifier"] = notifier
+    config_text = without_tui_notifications(texts["config"] or "") if settings.get("notifications") else None
+    hooks_path = paths["config"].parent / "hooks.json"
+    hooks_text = hooks_path.read_text() if getattr(args, "replace_paiw_notify", False) and hooks_path.exists() else None
+    if getattr(args, "replace_paiw_notify", False) and not settings.get("notifications"):
+        raise ValueError("--replace-paiw-notify requires enabled notifications.")
+    hooks = without_paiw_notification(json.loads(hooks_text), paths["home"]) if hooks_text is not None else None
     settings.setdefault("parent_profile", "Default")
     settings.setdefault("workspace_name", "Codex — Workspace")
     if args.workspace:
@@ -228,11 +304,21 @@ def install(paths, args):
     print("Install", manifest["version"], "from", source)
     print("Register", selector, "in", paths["marketplace"])
     print("Launchers:", ", ".join(p["Name"] for p in profiles["Profiles"] if p.get("Guid") in OWNED_GUIDS))
+    if settings.get("notifications"):
+        print("Notifications: input, approval and completion for background tabs; native TUI banners disabled.")
+    if hooks is not None and hooks != json.loads(hooks_text):
+        print("Legacy PAIW completion notifier: back up and remove its Codex registration only.")
+    if replace_link and canonical.resolve() != source:
+        print("Source symlink: back up and repoint to this checkout.")
     if args.dry_run:
         print("Dry run: no files or settings changed.")
         return 0
     # Serialize our own installers; detect other programs' edits before writing.
     with installation_lock(paths):
+        if (os.readlink(canonical) if canonical.is_symlink() else None) != previous_link:
+            raise RuntimeError("Source link changed during installation; review and retry.")
+        if hooks_text is not None and hooks_path.read_text() != hooks_text:
+            raise RuntimeError("Codex hooks changed during installation; review and retry.")
         for key, expected_text in texts.items():
             path = paths[key]
             if (path.read_text() if path.exists() else None) != expected_text:
@@ -244,15 +330,30 @@ def install(paths, args):
             (backup / "codex-config.toml").chmod(0o600)
         if not canonical.exists():
             canonical.parent.mkdir(parents=True, exist_ok=True)
-            canonical.symlink_to(source, target_is_directory=True)
+            if not canonical.is_symlink():
+                canonical.symlink_to(source, target_is_directory=True)
+        if replace_link and canonical.resolve() != source:
+            (backup / "source-link.json").write_text(json.dumps({"path": str(canonical), "target": previous_link}) + "\n")
+            (backup / "source-link.json").chmod(0o600)
+            temporary_link = canonical.with_name(".iterm2-status-install-link-" + str(os.getpid()))
+            temporary_link.symlink_to(source, target_is_directory=True)
+            os.replace(temporary_link, canonical)
         # Existing entries stay byte-for-byte unchanged during upgrades.
         if texts["marketplace"] is None or json.loads(texts["marketplace"]) != marketplace:
             save_json(paths["marketplace"], marketplace, backup, texts["marketplace"])
         try:
             run([codex, "plugin", "add", selector])
         except (OSError, subprocess.SubprocessError) as error:
+            if replace_link and previous_link is not None and canonical.resolve() == source:
+                canonical.unlink()
+                canonical.symlink_to(previous_link, target_is_directory=True)
             raise RuntimeError(f"Codex installation failed. Launchers were not changed. Backups: {backup}. Fix the prerequisite and rerun this installer.") from error
-        save_json(paths["profiles"], profiles, backup, texts["profiles"])
+        if texts["profiles"] is not None or profiles["Profiles"]:
+            save_json(paths["profiles"], profiles, backup, texts["profiles"])
+        if hooks is not None and hooks != json.loads(hooks_text):
+            save_json(hooks_path, hooks, backup, hooks_text)
+        if config_text is not None:
+            save_text(paths["config"], config_text, backup, texts["config"])
         save_json(paths["settings"], settings, backup, texts["settings"])
         for key, value in runtime_values:
             save_text(paths[key], value + "\n", backup, paths[key].read_text() if paths[key].exists() else None)
@@ -321,6 +422,11 @@ def main():
     parser.add_argument("--workspace-name", help="Name of the workspace launcher")
     parser.add_argument("--parent-profile", help="Existing iTerm profile to inherit; defaults to Default")
     parser.add_argument("--no-workspace", action="store_true", help="Remove the optional workspace launcher")
+    parser.add_argument("--no-launchers", action="store_true", help="Disable this plugin's launchers; preserve unrelated profiles")
+    parser.add_argument("--notifications", action="store_true", help="Enable macOS notifications for input, approval and completion")
+    parser.add_argument("--terminal-notifier", help="Executable terminal-notifier (saved for hooks)")
+    parser.add_argument("--replace-source-link", action="store_true", help="Repoint an existing source symlink to this checkout")
+    parser.add_argument("--replace-paiw-notify", action="store_true", help="Back up and remove only the legacy PAIW Codex completion hook")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--iterm-app", help="Custom iTerm.app location (saved for hooks and diagnostics)")
     parser.add_argument("--codex", help="Explicit Codex CLI executable (saved for launchers)")

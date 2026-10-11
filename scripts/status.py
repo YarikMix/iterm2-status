@@ -17,6 +17,7 @@ import unicodedata
 # Also support importlib-based embedding by the installer and test tools.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from iterm_support import find_it2
+from notifications import update_notice, notify
 
 EVENTS = (
     "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
@@ -121,6 +122,7 @@ def transition(previous, event):
     else:
         status, detail = "idle", "Codex · " + state["project"]
     state.update(status=status, detail=detail)
+    update_notice(previous, state, event)
     return state
 
 
@@ -205,6 +207,22 @@ def report(event):
                 reported = result.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
                 reported = False
+            # The report lock serializes notifications for this UUID too. Claim
+            # under the state lock so newer turns/waits cancel stale notices.
+            def claim_notice():
+                with locked(state_lock, 0.1):
+                    current = read_state(state_path)
+                    notice = current.get("notice")
+                    if not notice or notice != snapshot.get("notice") or notice.get("handled"):
+                        return False
+                    current["notice"] = dict(notice, handled=True)
+                    write_state(state_path, current)
+                    return True
+            try:
+                notify(snapshot, terminal, it2, deadline, claim_notice)
+            except Exception:
+                # Notification failures must not interrupt status reporting.
+                pass
             with locked(state_lock, 0.1):
                 latest = read_state(state_path)
                 if latest.get("revision") == snapshot.get("revision"):

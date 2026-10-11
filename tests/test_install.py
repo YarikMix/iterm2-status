@@ -15,6 +15,68 @@ spec.loader.exec_module(installer)
 
 
 class Installer(unittest.TestCase):
+    def test_notification_install_preserves_removed_launcher_and_other_hooks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            paths = installer.locations(home, ROOT, {})
+            hook_path = home / '.codex/hooks.json'
+            hook_path.parent.mkdir(parents=True)
+            notify = {'type': 'command', 'command': 'node "' + str(home / '.paiw/tools/system/hooks/codex/notify-stop.mjs') + '"',
+                      'statusMessage': '[PAIW managed hook] Paiw session stop notify'}
+            other = {'type': 'command', 'command': 'node "custom-notify-stop.mjs"'}
+            original = {'hooks': {'Stop': [{'matcher': '*', 'hooks': [notify, other]}],
+                                  'SessionStart': [{'hooks': [other]}]}, 'extra': {'keep': True}}
+            hook_path.write_text(json.dumps(original))
+            original_config = 'model = "example"\n\n[tui]\nstatus_line = ["weekly-limit"]\nnotifications = true # previous setting\n\n[features]\nexample = true\n'
+            paths['config'].write_text(original_config)
+            paths['canonical'].parent.mkdir(parents=True)
+            paths['canonical'].symlink_to(home / 'old-checkout')
+            notifier = home / 'terminal-notifier'
+            notifier.write_text('#!/bin/sh\nexit 0\n')
+            notifier.chmod(0o700)
+            args = argparse.Namespace(workspace=None, workspace_name=None, parent_profile=None,
+                                      no_workspace=False, dry_run=False, notifications=True,
+                                      terminal_notifier=str(notifier), no_launchers=True,
+                                      replace_source_link=True, replace_paiw_notify=True)
+            with patch.object(installer, 'prerequisites', return_value=([], {}, '/fake/codex', '/fake/it2')), patch.object(installer, 'run'):
+                installer.install(paths, args)
+                installer.install(paths, args)
+            self.assertFalse(paths['profiles'].exists())
+            settings = read_settings(paths)
+            self.assertIs(settings['notifications'], True)
+            self.assertIs(settings['launchers'], False)
+            self.assertEqual(settings['terminal_notifier'], str(notifier))
+            self.assertEqual(paths['canonical'].resolve(), ROOT)
+            self.assertIn('notifications = false', paths['config'].read_text())
+            self.assertIn('status_line = ["weekly-limit"]', paths['config'].read_text())
+            self.assertIn('[features]\nexample = true', paths['config'].read_text())
+            expected = dict(original, hooks=dict(original['hooks'], Stop=[{'matcher': '*', 'hooks': [other]}]))
+            self.assertEqual(json.loads(hook_path.read_text()), expected)
+            backups = list((paths['settings'].parent / 'backups').glob('*/hooks.json'))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(json.loads(backups[0].read_text()), original)
+
+    def test_notification_config_without_tui_keeps_other_settings(self):
+        self.assertEqual(installer.without_tui_notifications('model = "example"\n'),
+                         'model = "example"\n\n[tui]\nnotifications = false\n')
+
+    def test_multiline_native_notifications_are_rejected_without_rewriting(self):
+        with self.assertRaises(ValueError):
+            installer.without_tui_notifications('[tui]\nnotifications = [\n "approval-requested",\n]\n')
+
+    def test_no_launchers_preserves_unrelated_profiles(self):
+        original = {'Profiles': [{'Name': 'Custom', 'Guid': 'other'}], 'extra': 1}
+        self.assertEqual(installer.profile_config(ROOT, {'parent_profile': 'Default', 'launchers': False}, original), original)
+
+    def test_replace_source_link_refuses_real_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            paths = installer.locations(Path(temp), ROOT, {})
+            paths['canonical'].mkdir(parents=True)
+            args = argparse.Namespace(replace_source_link=True)
+            with self.assertRaisesRegex(ValueError, 'another checkout'):
+                installer.install(paths, args)
+            self.assertTrue(paths['canonical'].is_dir())
+
     def test_marketplace_preserves_existing_plugins_and_metadata(self):
         original = {"name": "mine", "interface": {"displayName": "My tools"},
                     "plugins": [{"name": "another", "source": {"source": "local", "path": "./another"}}]}
