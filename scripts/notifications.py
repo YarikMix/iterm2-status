@@ -8,7 +8,7 @@ import sys
 import time
 import unicodedata
 
-from iterm_support import executable, load_settings
+from iterm_support import APP_DIRECTORIES, executable, load_settings
 
 LABELS = {'input': 'Нужен ответ', 'approval': 'Нужно разрешение', 'complete': 'Ответ готов'}
 
@@ -79,6 +79,20 @@ def clean_title(value, limit=110):
     return ' '.join(value.split())[:limit]
 
 
+CODEX_IMAGE = 'CodexBar.app/Contents/Resources/Brand-ProviderIcon-codex.png'
+
+
+def codex_image(home=None, directories=None):
+    """Codex artwork already on this Mac (CodexBar ships it); the repo carries no logo."""
+    home = Path.home() if home is None else Path(home)
+    directories = APP_DIRECTORIES if directories is None else directories
+    for directory in [home / 'Applications', *directories]:
+        candidate = Path(directory) / CODEX_IMAGE
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def notify(state, terminal, it2, deadline, claim):
     notice = state.get('notice')
     if not notice or notice.get('handled'):
@@ -102,12 +116,14 @@ def notify(state, terminal, it2, deadline, claim):
         return
     title = clean_title(title) or state.get('project') or 'Codex'
     action = shlex.join([sys.executable, '-B', str(Path(__file__).with_name('focus.py')), terminal, it2])
+    icon = codex_image()
+    image = ['-contentImage', Path(icon).as_uri()] if icon else []
     # App startup can take several seconds (for example under Rosetta). Hand
     # delivery to a bounded child without tying it to the hook's 3s lifetime.
     subprocess.Popen([sys.executable, '-B', str(Path(__file__).with_name('post_notification.py')),
                     notifier, '-title', 'Codex · ' + title,
                     '-subtitle', LABELS[notice['kind']], '-message', 'Проект: ' + state.get('project', ''),
-                    '-group', 'codex-' + terminal, '-execute', action, '-sound', 'default'],
+                    '-group', 'codex-' + terminal, '-execute', action, '-sound', 'default', *image],
                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                    close_fds=True, start_new_session=True)
 

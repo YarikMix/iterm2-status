@@ -136,6 +136,14 @@ The installer validates TOML before changing it. Use an explicit `[tui]` section
 dotted `tui.notifications = ...`, inline `tui = {...}`, and multiline notification
 values are rejected with guidance before installation files are changed.
 
+`--terminal-notifier` is optional: without it the installer keeps the saved path while
+it exists, otherwise it picks the first `terminal-notifier` in `PATH` whose `-help`
+exits successfully (a broken version-manager shim is skipped) and saves that path.
+If none works: `brew install terminal-notifier`.
+
+If CodexBar is installed, banners show its Codex icon on the right
+(`-contentImage`, read from `CodexBar.app`; this repository ships no logo).
+
 Use the executable inside `terminal-notifier.app/Contents/MacOS` if a version-manager
 shim cannot run in hook environments. macOS must allow this app's notifications and
 allow the hook interpreter/terminal to automate iTerm2. Notification titles come

@@ -14,6 +14,7 @@ from test_status import event, UUID, UUID2, SCRIPT
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import iterm_support as support
+import notifications
 
 
 class Notifications(unittest.TestCase):
@@ -222,6 +223,20 @@ class Notifications(unittest.TestCase):
         self.hook('Stop')
         self.assertEqual(self.notices(), [])
 
+    def test_hook_passes_codex_image_when_codexbar_present(self):
+        home = self.data / 'home dir'
+        icon = home / 'Applications/CodexBar.app/Contents/Resources/Brand-ProviderIcon-codex.png'
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b'png')
+        self.env = dict(self.env, HOME=str(home))
+        self.hook('UserPromptSubmit')
+        self.hook('Stop')
+        args = self.notices(expected=1)[0]
+        url = args[args.index('-contentImage') + 1]
+        self.assertEqual(url, icon.as_uri())
+        self.assertTrue(url.startswith('file://'))
+        self.assertIn('%20', url)
+
 
 class NotifierDiscovery(unittest.TestCase):
     def setUp(self):
@@ -263,6 +278,25 @@ class NotifierDiscovery(unittest.TestCase):
         broken = self.make('a', code=1)
         self.assertIsNone(support.find_terminal_notifier(None, self.env(broken.parent)))
 
+
+class CodexImage(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+
+    def test_codex_image_prefers_home_applications(self):
+        icon = self.home / 'Applications/CodexBar.app/Contents/Resources/Brand-ProviderIcon-codex.png'
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b'png')
+        other = self.home / 'system'
+        other_icon = other / 'CodexBar.app/Contents/Resources/Brand-ProviderIcon-codex.png'
+        other_icon.parent.mkdir(parents=True)
+        other_icon.write_bytes(b'png')
+        self.assertEqual(notifications.codex_image(self.home, [other]), str(icon))
+
+    def test_codex_image_none_without_codexbar(self):
+        self.assertIsNone(notifications.codex_image(self.home, []))
 
 if __name__ == '__main__':
     unittest.main()
