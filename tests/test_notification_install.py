@@ -3,6 +3,7 @@ import argparse
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -51,11 +52,11 @@ class NotificationInstaller(unittest.TestCase):
         self.notifier.write_text('#!/bin/sh\nexit 0\n')
         self.notifier.chmod(0o700)
 
-    def install(self, enable=True, dry_run=False, launchers=False):
+    def install(self, enable=True, dry_run=False, launchers=False, terminal_notifier=True):
         args = argparse.Namespace(workspace=None, workspace_name=None, parent_profile=None,
                                   no_workspace=False, no_launchers=not launchers, dry_run=dry_run,
                                   notifications=enable, no_notifications=not enable,
-                                  terminal_notifier=str(self.notifier))
+                                  terminal_notifier=str(self.notifier) if terminal_notifier is True else terminal_notifier)
         # Capability discovery is external to these regressions. run/subprocess
         # are deliberately real: the executable modifies config.toml during add.
         with patch.object(installer, 'prerequisites', return_value=([], {}, str(self.codex), '/fake/it2')):
@@ -234,6 +235,41 @@ class NotificationInstaller(unittest.TestCase):
                 self.install(enable=enable)
         self.assertEqual(self.paths['config'].read_text(), original)
         self.assertEqual(self.calls(), [])
+
+
+    def make_notifier(self, name, code=0):
+        directory = self.home / name
+        directory.mkdir()
+        path = directory / 'terminal-notifier'
+        path.write_text(f'#!/bin/sh\nexit {code}\n')
+        path.chmod(0o700)
+        return path
+
+    def saved_notifier(self):
+        return json.loads(self.paths['settings'].read_text()).get('terminal_notifier')
+
+    def test_missing_saved_notifier_is_replaced_from_path(self):
+        self.install()
+        self.notifier.unlink()
+        working = self.make_notifier('bin2')
+        with patch.dict(os.environ, {'PATH': str(working.parent)}):
+            self.install(terminal_notifier=None)
+        self.assertEqual(self.saved_notifier(), str(working))
+
+    def test_explicit_missing_notifier_is_an_error(self):
+        before = self.paths['config'].read_text() if self.paths['config'].exists() else None
+        with self.assertRaises(ValueError) as error:
+            self.install(terminal_notifier=str(self.home / 'nope'))
+        self.assertIn('terminal-notifier', str(error.exception))
+        after = self.paths['config'].read_text() if self.paths['config'].exists() else None
+        self.assertEqual(before, after)
+
+    def test_no_working_notifier_error_names_brew(self):
+        broken = self.make_notifier('bin3', code=1)
+        with patch.dict(os.environ, {'PATH': str(broken.parent)}):
+            with self.assertRaises(ValueError) as error:
+                self.install(terminal_notifier=None)
+        self.assertIn('brew install terminal-notifier', str(error.exception))
 
 
 class NotificationPythonRequirement(unittest.TestCase):

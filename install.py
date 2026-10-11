@@ -17,7 +17,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
-from iterm_support import config_dir, load_settings, executable
+from iterm_support import config_dir, load_settings, executable, find_terminal_notifier
 from diagnostics import check, prerequisites, live_check, display
 
 NAME = "iterm2-status"
@@ -362,9 +362,13 @@ def install(paths, args):
     if getattr(args, "terminal_notifier", None):
         settings["terminal_notifier"] = str(Path(args.terminal_notifier).expanduser().absolute())
     if settings.get("notifications"):
-        notifier = executable(settings.get("terminal_notifier") or "terminal-notifier")
+        if getattr(args, "terminal_notifier", None):
+            notifier = executable(settings["terminal_notifier"])
+        else:
+            notifier = find_terminal_notifier(settings.get("terminal_notifier"))
         if not notifier:
-            raise ValueError("Notifications require an executable terminal-notifier; use --terminal-notifier PATH.")
+            raise ValueError("Notifications require a working terminal-notifier "
+                             "(brew install terminal-notifier) or --terminal-notifier PATH.")
         settings["terminal_notifier"] = notifier
     # Preflight validates both the existing and resulting TOML before any writes.
     _, config_text = notification_configuration(settings, texts["config"] or "")

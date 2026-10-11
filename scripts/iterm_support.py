@@ -6,6 +6,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import subprocess
 
 MIN_CODEX = (0, 153, 4)
 MIN_ITERM = (3, 7, 0)
@@ -38,6 +39,30 @@ def executable(value):
     value = os.path.expanduser(str(value))
     candidate = shutil.which(value)
     return str(Path(candidate).absolute()) if candidate else None
+
+
+def find_terminal_notifier(saved, environ=None, timeout=3):
+    """The saved notifier if it still exists, else the first working one in PATH."""
+    found = executable(saved)
+    if found:
+        return found
+    environ = os.environ if environ is None else environ
+    # A version-manager shim can be executable yet fail; require a clean -help.
+    for directory in environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / "terminal-notifier"
+        if not (candidate.is_file() and os.access(candidate, os.X_OK)):
+            continue
+        try:
+            result = subprocess.run([str(candidate), "-help"], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            return str(candidate.absolute())
+    return None
 
 
 def find_it2(home=None, environ=None, settings=None):

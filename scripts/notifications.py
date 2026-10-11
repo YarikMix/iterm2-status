@@ -86,7 +86,7 @@ def notify(state, terminal, it2, deadline, claim):
     settings = load_settings()
     if settings.get('notifications') is not True:
         return
-    notifier = executable(settings.get('terminal_notifier'))
+    notifier = executable(settings.get('terminal_notifier')) or shutil.which('terminal-notifier')
     osascript = shutil.which('osascript')
     if not notifier or not osascript or deadline - time.monotonic() < 0.1:
         return

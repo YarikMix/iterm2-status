@@ -12,6 +12,9 @@ import unittest
 
 from test_status import event, UUID, UUID2, SCRIPT
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import iterm_support as support
+
 
 class Notifications(unittest.TestCase):
     def setUp(self):
@@ -204,6 +207,61 @@ class Notifications(unittest.TestCase):
             self.hook('Stop')
             self.assertLess(time.monotonic() - started, 2.5)
             path.write_text(original)
+
+
+    def test_hook_falls_back_to_path_when_saved_notifier_is_gone(self):
+        self.settings.write_text(json.dumps({'notifications': True, 'terminal_notifier': str(self.data / 'gone/terminal-notifier')}))
+        self.hook('UserPromptSubmit')
+        self.hook('Stop')
+        self.assertEqual(len(self.notices(expected=1)), 1)
+
+    def test_hook_without_any_notifier_stays_silent(self):
+        self.settings.write_text(json.dumps({'notifications': True, 'terminal_notifier': str(self.data / 'gone/terminal-notifier')}))
+        (self.bin / 'terminal-notifier').unlink()
+        self.hook('UserPromptSubmit')
+        self.hook('Stop')
+        self.assertEqual(self.notices(), [])
+
+
+class NotifierDiscovery(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def make(self, name, code=0, sleep=0):
+        directory = self.root / name
+        directory.mkdir()
+        path = directory / 'terminal-notifier'
+        path.write_text('#!/bin/sh\n' + (f'sleep {sleep}\n' if sleep else '') + f'exit {code}\n')
+        path.chmod(0o700)
+        return path
+
+    def env(self, *entries):
+        return {'PATH': os.pathsep.join(str(e) for e in entries)}
+
+    def test_saved_path_wins_without_scanning_path(self):
+        saved = self.make('saved', code=1)
+        other = self.make('other')
+        self.assertEqual(support.find_terminal_notifier(str(saved), self.env(other.parent)), str(saved))
+
+    def test_skips_broken_and_finds_working_on_path(self):
+        broken = self.make('a', code=1)
+        working = self.make('b')
+        environ = self.env('', '/nonexistent', broken.parent, working.parent)
+        self.assertEqual(support.find_terminal_notifier(str(self.root / 'gone'), environ), str(working))
+
+    def test_hanging_candidate_is_skipped(self):
+        hanging = self.make('a', sleep=5)
+        working = self.make('b')
+        started = time.monotonic()
+        found = support.find_terminal_notifier(None, self.env(hanging.parent, working.parent), timeout=0.2)
+        self.assertEqual(found, str(working))
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_no_working_candidate_returns_none(self):
+        broken = self.make('a', code=1)
+        self.assertIsNone(support.find_terminal_notifier(None, self.env(broken.parent)))
 
 
 if __name__ == '__main__':
