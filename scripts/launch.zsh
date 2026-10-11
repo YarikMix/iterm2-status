@@ -37,8 +37,10 @@ fi
 # Since Codex 0.157 hooks run in a shared app-server that carries the environment
 # (including ITERM_SESSION_ID) of whichever tab started it. --no-daemon keeps them
 # in this tab's own process. Older Codex does not know the flag, so check first.
+# Codex rejects the flag twice, so skip it when the arguments already carry it.
 codex_args=("$@")
-if "$codex_path" --help 2>/dev/null | grep -q -- --no-daemon; then
+if (( ! ${codex_args[(Ie)--no-daemon]} )) \
+   && "$codex_path" --help 2>/dev/null | grep -q -- --no-daemon; then
   codex_args=(--no-daemon "$@")
 fi
 "$codex_path" "${codex_args[@]}"

@@ -190,6 +190,11 @@ class Launcher(unittest.TestCase):
         self.assertEqual(self.run_launcher("--no-daemon", "it's a prompt"),
                          ["--no-daemon", "it's a prompt"])
 
+    def test_does_not_double_no_daemon(self):
+        # Codex rejects a repeated --no-daemon ("cannot be used multiple times").
+        self.assertEqual(self.run_launcher("--no-daemon", "--no-daemon", "resume"),
+                         ["--no-daemon", "resume"])
+
 
 if __name__ == "__main__":
     unittest.main()

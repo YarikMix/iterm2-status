@@ -85,13 +85,21 @@ run inside that daemon. They see the `ITERM_SESSION_ID` of the tab that started 
 daemon, so status updates go to the wrong tab or nowhere. The **Codex** profile launcher
 now adds `--no-daemon` itself (only when `codex --help` lists it), which keeps hooks in the
 tab's own process. When you start `codex` from an ordinary tab, pass the same flag, for
-example with a zsh function:
+example with a zsh function. The `function` keyword keeps it valid even if you also have
+`alias codex=...`; the flag is added only when your Codex knows it and you did not pass it:
 
 ```zsh
-codex() {
-  case "$1" in
-    agents|remote-control|app-server) command codex "$@" ;;
-    *) command codex --no-daemon "$@" ;;
+function codex {
+  case "${1-}" in
+    agents|remote-control|app-server)
+      command codex "$@" ;;
+    *)
+      if (( ! ${@[(Ie)--no-daemon]} )) \
+         && command codex --help 2>/dev/null | grep -q -- --no-daemon; then
+        command codex --no-daemon "$@"
+      else
+        command codex "$@"
+      fi ;;
   esac
 }
 ```
