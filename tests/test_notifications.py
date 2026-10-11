@@ -287,6 +287,16 @@ class NotifierDiscovery(unittest.TestCase):
         self.assertEqual(found, str(working))
         self.assertLess(time.monotonic() - started, 3)
 
+    def test_working_version_manager_shim_is_skipped(self):
+        shims = self.root / 'shims'
+        shims.mkdir()
+        manager = shims / 'mise'
+        manager.write_text('#!/bin/sh\nexit 0\n')
+        manager.chmod(0o700)
+        (shims / 'terminal-notifier').symlink_to(manager)
+        working = self.make('real')
+        self.assertEqual(support.find_terminal_notifier(None, self.env(shims, working.parent)), str(working))
+
     def test_no_working_candidate_returns_none(self):
         broken = self.make('a', code=1)
         self.assertIsNone(support.find_terminal_notifier(None, self.env(broken.parent)))

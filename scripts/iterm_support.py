@@ -68,6 +68,8 @@ def find_terminal_notifier(saved, environ=None, timeout=3):
         candidate = Path(directory) / "terminal-notifier"
         if not (candidate.is_file() and os.access(candidate, os.X_OK)):
             continue
+        if Path(os.path.realpath(candidate)).name != "terminal-notifier":
+            continue  # a shim manager's link; it may work, but each banner would start the manager
         try:
             result = subprocess.run([str(candidate), "-help"], stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
