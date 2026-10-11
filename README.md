@@ -130,12 +130,22 @@ Enable banners for input requests, approval requests, and completed responses:
 python3 install.py --notifications --terminal-notifier /absolute/path/to/terminal-notifier
 ```
 
+Changing the native TUI notification setting requires **Python 3.11+**, which
+includes `tomllib`. The base status plugin and its hooks still support Python 3.9+.
+The installer validates TOML before changing it. Use an explicit `[tui]` section:
+dotted `tui.notifications = ...`, inline `tui = {...}`, and multiline notification
+values are rejected with guidance before installation files are changed.
+
 Use the executable inside `terminal-notifier.app/Contents/MacOS` if a version-manager
 shim cannot run in hook environments. macOS must allow this app's notifications and
 allow the hook interpreter/terminal to automate iTerm2. Notification titles come
 from the originating tab, with the project basename and a generic Russian event
-label. Prompts and tool arguments are not used in banners or stored in the cache.
-The tab title is read only when a notice is pending and is not cached.
+label. **Codex derives its tab title from the first request, so a banner title can
+contain text from that request.** Consider this when notifications are visible on
+a shared screen or lock screen. The plugin reads the tab title only when a notice
+is pending; it does not read transcripts or use raw prompt/tool payloads for the
+banner text. Tab titles, raw prompts, and tool arguments are not stored in the
+status cache.
 
 Banners are suppressed while the originating tab is visible in the frontmost iTerm
 window, including its split panes. Repeated hooks for the same waiting state or
@@ -148,6 +158,21 @@ Slow application startup can finish after the observational hook has exited;
 it does not consume the hook's three-second budget or block Codex.
 
 The installer backs up and disables Codex's native TUI banners to avoid duplicates.
+It remembers the previous `tui.notifications` value (including its absence) at
+first enable. Subsequent installs keep that original value. To disable plugin
+banners and restore the native setting:
+
+```sh
+python3 install.py --no-notifications
+```
+
+Uninstall also restores that setting. Other config values and plugin registration
+changes made by Codex are preserved. A native notification value you edited after
+enabling these banners takes precedence and is left intact on disable/uninstall.
+Older experimental installations recover the original value only from a backup
+that records notifications being disabled before enable; without that record,
+restore the original native setting from your backup before proceeding.
+
 `--replace-paiw-notify` additionally removes only the legacy PAIW Codex completion
 notifier registration, preserving all other hooks and the managed PAIW source.
 PAIW updates may restore that registration; rerun this option if duplicates return.
@@ -155,9 +180,9 @@ PAIW updates may restore that registration; rerun this option if duplicates retu
 unrelated profiles. `--replace-source-link` permits repointing an existing source
 symlink to a development checkout; it refuses to replace a real directory.
 Use `--dry-run` to preview these changes. Backups include `hooks.json`, `config.toml`,
-settings and `source-link.json` when changed. To undo notification configuration,
-restore those changed files/link from the printed backup directory and reinstall
-the previous source. Uninstall alone does not restore external hook/TUI preferences.
+settings and `source-link.json` when changed. `--no-notifications` and uninstall
+restore the saved native TUI notification setting; restoring a removed legacy
+PAIW hook or a replaced source link requires the corresponding backup.
 
 Fixture tests cover notification selection, concurrency, suppression, click actions,
 and failure timeouts. A live check remains necessary after installing: start Codex
@@ -194,8 +219,9 @@ results, without home paths, project names, terminal IDs, prompts, or tool outpu
 Use it when [reporting a bug](https://github.com/treyreynolds/iterm2-status/issues/new/choose).
 See [troubleshooting](docs/troubleshooting.md) for specific fixes.
 
-Uninstall removes the cached Codex plugin and archives only its own launcher
-profiles. Source, preferences, marketplace entry, and backups remain available for
+Uninstall removes the cached Codex plugin, restores the saved native notification
+setting, disables plugin banners, and archives only its own launcher profiles.
+Source, other preferences, marketplace entry, and backups remain available for
 reinstallation. Repeating uninstall is safe.
 
 ## Data and behavior

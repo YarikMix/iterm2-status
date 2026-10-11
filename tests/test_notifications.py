@@ -92,6 +92,18 @@ class Notifications(unittest.TestCase):
         self.hook('Stop')
         self.assertEqual(len(self.notices(expected=1)), 1)
 
+    def test_banner_can_show_tab_title_derived_from_first_prompt_without_caching_it(self):
+        title = 'Разобрать первый запрос пользователя'
+        (self.data / 'context').write_text('false\n' + title)
+        self.hook('UserPromptSubmit', prompt='Raw prompt event is not banner text')
+        self.hook('Stop')
+        notice = self.notices(expected=1)[0]
+        self.assertEqual(notice[notice.index('-title') + 1], 'Codex · ' + title)
+        self.assertNotIn('Raw prompt event', json.dumps(notice, ensure_ascii=False))
+        cached = json.dumps(json.loads((self.data / (UUID + '.json')).read_text()), ensure_ascii=False)
+        self.assertNotIn(title, cached)
+        self.assertNotIn('Raw prompt event', cached)
+
     def test_two_sessions_and_new_turns_are_independent(self):
         for terminal in [UUID, UUID2, UUID]:
             self.hook('UserPromptSubmit', terminal=terminal)

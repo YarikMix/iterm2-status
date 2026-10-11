@@ -11,6 +11,12 @@ can be guessed. Raw prompts, tool commands, and tool output are not saved. Cache
 files and local backups use private file permissions. Local status tombstones are
 retained to reject late events.
 
+Opt-in macOS banners show the originating tab title. Codex derives that title
+from the first request, so request text can appear on a shared screen or lock
+screen. The plugin does not read transcripts or store tab titles in its status
+cache. Disable these banners with `python3 install.py --no-notifications`; this
+also restores the saved native TUI notification setting.
+
 `doctor --json` exposes only versions and named check results. It excludes personal
 paths, terminal/project identities, hook payloads, and child-process output. Full
 configuration files and backups may contain sensitive settings; never post them.

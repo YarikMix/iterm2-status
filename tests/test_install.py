@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 import tempfile
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ spec.loader.exec_module(installer)
 
 
 class Installer(unittest.TestCase):
+    @unittest.skipIf(sys.version_info < (3, 11), 'Notification configuration requires tomllib')
     def test_notification_install_preserves_removed_launcher_and_other_hooks(self):
         with tempfile.TemporaryDirectory() as temp:
             home = Path(temp)
@@ -56,10 +58,12 @@ class Installer(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual(json.loads(backups[0].read_text()), original)
 
+    @unittest.skipIf(sys.version_info < (3, 11), 'Notification configuration requires tomllib')
     def test_notification_config_without_tui_keeps_other_settings(self):
         self.assertEqual(installer.without_tui_notifications('model = "example"\n'),
                          'model = "example"\n\n[tui]\nnotifications = false\n')
 
+    @unittest.skipIf(sys.version_info < (3, 11), 'Notification configuration requires tomllib')
     def test_multiline_native_notifications_are_rejected_without_rewriting(self):
         with self.assertRaises(ValueError):
             installer.without_tui_notifications('[tui]\nnotifications = [\n "approval-requested",\n]\n')

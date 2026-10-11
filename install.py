@@ -2,6 +2,7 @@
 """Install, inspect, or remove the local Codex/iTerm2 integration (stdlib only)."""
 
 import argparse
+import copy
 from contextlib import contextmanager
 import fcntl
 from datetime import datetime, timezone
@@ -143,28 +144,126 @@ def without_paiw_notification(existing, home):
     return value
 
 
-def without_tui_notifications(content):
-    """Keep other TOML text intact and disable duplicate native TUI banners."""
+def parse_toml(content):
+    try:
+        import tomllib
+    except ImportError as error:
+        raise ValueError("Notification configuration requires Python 3.11+ (tomllib).") from error
+    try:
+        return tomllib.loads(content)
+    except tomllib.TOMLDecodeError as error:
+        # Configuration may contain secrets. Never echo the malformed line.
+        raise ValueError("Invalid Codex TOML; review config.toml before changing notifications.") from error
+
+
+def edit_tui_notifications(content, replacement, remove_empty=False):
+    """Edit one explicit [tui] key; validate syntax and unrelated parsed values."""
+    before = parse_toml(content)
+    tui = before.get('tui', {})
+    if not isinstance(tui, dict):
+        raise ValueError("Use an explicit [tui] table for native notification settings.")
+    if 'notifications' in tui:
+        value = tui['notifications']
+        if not (isinstance(value, bool) or isinstance(value, list) and all(isinstance(x, str) for x in value)):
+            raise ValueError("tui.notifications must be a boolean or an array of event names.")
+    if replacement is not None:
+        restored = parse_toml('[tui]\n' + replacement + '\n')
+        value = restored.get('tui', {}).get('notifications')
+        if set(restored) != {'tui'} or set(restored['tui']) != {'notifications'} or not (
+            isinstance(value, bool) or isinstance(value, list) and all(isinstance(x, str) for x in value)
+        ):
+            raise ValueError("Saved native notification setting is invalid; review settings.json.")
     lines = content.splitlines(keepends=True)
     sections = [i for i, line in enumerate(lines) if re.fullmatch(r'\s*\[\s*(?:tui|"tui"|\x27tui\x27)\s*\]\s*(?:#.*)?', line.rstrip('\r\n'))]
     if len(sections) > 1:
         raise ValueError("Duplicate [tui] sections; review Codex config before enabling notifications.")
+    original = None
     if not sections:
-        return content.rstrip('\r\n') + ('\n\n' if content.strip() else '') + '[tui]\nnotifications = false\n'
-    start = sections[0]
-    for i in range(start + 1, len(lines)):
-        if re.match(r'\s*\[', lines[i]):
-            break
-        key = re.match(r'\s*(?:notifications|"notifications"|\x27notifications\x27)\s*=\s*(.*)', lines[i].rstrip('\r\n'))
-        if key:
-            if not re.fullmatch(r'(?:true|false|\[.*\])\s*(?:#.*)?', key[1]):
-                raise ValueError("Use a single-line tui.notifications setting before enabling this integration.")
-            lines[i] = 'notifications = false\n'
-            return ''.join(lines)
-    if not lines[start].endswith('\n'):
-        lines[start] += '\n'
-    lines.insert(start + 1, 'notifications = false\n')
-    return ''.join(lines)
+        if 'tui' in before:
+            raise ValueError("Use an explicit [tui] section instead of dotted or inline tui settings.")
+        result = content if replacement is None else (
+            content.rstrip('\r\n') + ('\n\n' if content.strip() else '') + '[tui]\n' + replacement + '\n')
+    else:
+        start = sections[0]
+        found = None
+        for i in range(start + 1, len(lines)):
+            if re.match(r'\s*\[', lines[i]):
+                break
+            key = re.match(r'\s*(?:notifications|"notifications"|\x27notifications\x27)\s*=\s*(.*)', lines[i].rstrip('\r\n'))
+            if key:
+                if not re.fullmatch(r'(?:true|false|\[.*\])\s*(?:#.*)?', key[1]):
+                    raise ValueError("Use a single-line tui.notifications setting before enabling this integration.")
+                found, original = i, lines[i].rstrip('\r\n')
+                break
+        if found is None and 'notifications' in before.get('tui', {}):
+            raise ValueError("Could not safely locate tui.notifications; use a single-line explicit key.")
+        if found is not None:
+            lines[found:found + 1] = [] if replacement is None else [replacement + '\n']
+        elif replacement is not None:
+            if not lines[start].endswith('\n'):
+                lines[start] += '\n'
+            lines.insert(start + 1, replacement + '\n')
+        result = ''.join(lines)
+        if remove_empty and not parse_toml(result).get('tui'):
+            del lines[start]
+            result = ''.join(lines)
+    after = parse_toml(result)
+    # A header-shaped line inside a multiline TOML string must not be edited.
+    # Syntax validity alone cannot catch that corruption.
+    comparable = []
+    for data in (copy.deepcopy(before), copy.deepcopy(after)):
+        if isinstance(data.get('tui'), dict):
+            data['tui'].pop('notifications', None)
+            if not data['tui']:
+                data.pop('tui')
+        comparable.append(data)
+    if comparable[0] != comparable[1]:
+        raise ValueError("Notification edit would change unrelated TOML settings; review config.toml.")
+    expected = parse_toml('[tui]\n' + replacement + '\n')['tui']['notifications'] if replacement is not None else None
+    if after.get('tui', {}).get('notifications') != expected:
+        raise ValueError("Notification edit did not produce the expected TOML setting.")
+    return result, original, not bool(sections)
+
+
+def without_tui_notifications(content):
+    return edit_tui_notifications(content, 'notifications = false')[0]
+
+
+def notification_configuration(settings, content):
+    """Return a planned settings/config pair, keeping the first native value."""
+    settings = dict(settings)
+    if settings.get('notifications'):
+        result, original, added = edit_tui_notifications(content, 'notifications = false')
+        settings.setdefault('native_notifications', {'line': original, 'added_section': added})
+        return settings, result
+    saved = settings.pop('native_notifications', None)
+    if saved is None:
+        return settings, None
+    if parse_toml(content).get('tui', {}).get('notifications') is not False:
+        # An explicit user edit after enable takes precedence over restoration.
+        return settings, content
+    return settings, edit_tui_notifications(content, saved['line'], saved['added_section'])[0]
+
+
+def recover_native_notifications(paths, settings):
+    """Migrate older opt-in installs only from a proven pre-enable backup."""
+    if not settings.get('notifications') or 'native_notifications' in settings:
+        return settings
+    backups = paths['settings'].parent / 'backups'
+    for saved_settings in sorted(backups.glob('*/settings.json'), reverse=True):
+        try:
+            previous = read_json(saved_settings, {})
+            if not isinstance(previous, dict) or previous.get('notifications') is True:
+                continue
+            for name in ['codex-config.toml', 'config.toml']:
+                original = saved_settings.parent / name
+                if original.exists():
+                    _, line, added = edit_tui_notifications(original.read_text(), 'notifications = false')
+                    return dict(settings, native_notifications={'line': line, 'added_section': added})
+        except (OSError, ValueError):
+            continue
+    raise ValueError("Original native notification setting was not recorded by this older installation. "
+                     "Restore tui.notifications from its pre-enable backup before reinstalling or uninstalling.")
 
 
 def normalized_settings(value):
@@ -174,6 +273,12 @@ def normalized_settings(value):
     for name in ["notifications", "launchers"]:
         if name in value and not isinstance(value[name], bool):
             raise ValueError(f"Saved setting {name} must be a boolean.")
+    saved = value.get('native_notifications')
+    if 'native_notifications' in value and (not isinstance(saved, dict) or set(saved) != {'line', 'added_section'} or
+                             not isinstance(saved.get('added_section'), bool) or
+                             saved.get('line') is not None and
+                             (not isinstance(saved['line'], str) or any(c in saved['line'] for c in '\n\r\0'))):
+        raise ValueError("Saved native notification setting is invalid; review settings.json.")
     for name in ["parent_profile", "workspace", "workspace_name", "iterm_app", "codex", "shell", "terminal_notifier"]:
         if name in value and (not isinstance(value[name], str) or not value[name] or
                               any(c in value[name] for c in "\n\r\0")):
@@ -247,11 +352,13 @@ def install(paths, args):
     previous_link = os.readlink(canonical) if canonical.is_symlink() else None
     texts = {key: path.read_text() if path.exists() else None
              for key, path in paths.items() if key in {"settings", "marketplace", "profiles", "config"}}
-    settings = normalized_settings(json.loads(texts["settings"]) if texts["settings"] else {})
+    settings = recover_native_notifications(paths, normalized_settings(json.loads(texts["settings"]) if texts["settings"] else {}))
     if getattr(args, "no_launchers", False):
         settings["launchers"] = False
     if getattr(args, "notifications", False):
         settings["notifications"] = True
+    if getattr(args, "no_notifications", False):
+        settings["notifications"] = False
     if getattr(args, "terminal_notifier", None):
         settings["terminal_notifier"] = str(Path(args.terminal_notifier).expanduser().absolute())
     if settings.get("notifications"):
@@ -259,7 +366,8 @@ def install(paths, args):
         if not notifier:
             raise ValueError("Notifications require an executable terminal-notifier; use --terminal-notifier PATH.")
         settings["terminal_notifier"] = notifier
-    config_text = without_tui_notifications(texts["config"] or "") if settings.get("notifications") else None
+    # Preflight validates both the existing and resulting TOML before any writes.
+    _, config_text = notification_configuration(settings, texts["config"] or "")
     hooks_path = paths["config"].parent / "hooks.json"
     hooks_text = hooks_path.read_text() if getattr(args, "replace_paiw_notify", False) and hooks_path.exists() else None
     if getattr(args, "replace_paiw_notify", False) and not settings.get("notifications"):
@@ -352,9 +460,13 @@ def install(paths, args):
             save_json(paths["profiles"], profiles, backup, texts["profiles"])
         if hooks is not None and hooks != json.loads(hooks_text):
             save_json(hooks_path, hooks, backup, hooks_text)
+        # Codex itself adds its plugin registration to this file. Take a
+        # fresh snapshot after add and preserve those changes in our edit.
+        current_config = paths["config"].read_text() if paths["config"].exists() else None
+        planned_settings, config_text = notification_configuration(settings, current_config or "")
         if config_text is not None:
-            save_text(paths["config"], config_text, backup, texts["config"])
-        save_json(paths["settings"], settings, backup, texts["settings"])
+            save_text(paths["config"], config_text, backup, current_config)
+        save_json(paths["settings"], planned_settings, backup, texts["settings"])
         for key, value in runtime_values:
             save_text(paths[key], value + "\n", backup, paths[key].read_text() if paths[key].exists() else None)
         for item in checks:
@@ -390,11 +502,19 @@ def _uninstall(paths, dry_run):
     previous = path.read_text() if path.exists() else None
     data = json.loads(previous) if previous else {"Profiles": []}
     retained = [p for p in data["Profiles"] if p.get("Guid") not in OWNED_GUIDS]
+    settings_text = paths['settings'].read_text() if paths['settings'].exists() else None
+    settings = recover_native_notifications(paths, normalized_settings(json.loads(settings_text) if settings_text else {}))
+    managed_notifications = 'notifications' in settings or 'native_notifications' in settings
+    if managed_notifications:
+        settings['notifications'] = False
+    config_text = paths['config'].read_text() if paths['config'].exists() else None
+    notification_configuration(settings, config_text or '')
     if dry_run:
         print("Would uninstall", f"{NAME}@{marketplace}", "and archive only this integration's launchers.")
+        if managed_notifications:
+            print("Would disable plugin notifications and restore the saved native TUI notification setting.")
         return 0
     from iterm_support import executable
-    settings = normalized_settings(read_json(paths["settings"], {}))
     codex = executable(settings.get("codex") or "codex")
     if not codex:
         raise ValueError("Codex CLI was not found; restore it before uninstalling the plugin.")
@@ -402,8 +522,16 @@ def _uninstall(paths, dry_run):
     installed = [p for p in json.loads(response.stdout).get("installed", []) if p.get("name") == NAME]
     if installed:
         run([codex, "plugin", "remove", f"{NAME}@{marketplace}"])
+    backup = paths["settings"].parent / "backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    # remove, like add, can change config.toml; restore only the native key on
+    # top of that new snapshot rather than restoring an entire old config.
+    current_config = paths['config'].read_text() if paths['config'].exists() else None
+    planned_settings, restored_config = notification_configuration(settings, current_config or '')
+    if restored_config is not None:
+        save_text(paths['config'], restored_config, backup, current_config)
+    if managed_notifications:
+        save_json(paths['settings'], planned_settings, backup, settings_text)
     if previous is not None:
-        backup = paths["settings"].parent / "backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         if retained:
             save_json(path, dict(data, Profiles=retained), backup, previous)
         else:
@@ -423,7 +551,9 @@ def main():
     parser.add_argument("--parent-profile", help="Existing iTerm profile to inherit; defaults to Default")
     parser.add_argument("--no-workspace", action="store_true", help="Remove the optional workspace launcher")
     parser.add_argument("--no-launchers", action="store_true", help="Disable this plugin's launchers; preserve unrelated profiles")
-    parser.add_argument("--notifications", action="store_true", help="Enable macOS notifications for input, approval and completion")
+    notification_flags = parser.add_mutually_exclusive_group()
+    notification_flags.add_argument("--notifications", action="store_true", help="Enable macOS notifications for input, approval and completion")
+    notification_flags.add_argument("--no-notifications", action="store_true", help="Disable plugin banners and restore the previous native TUI notification setting")
     parser.add_argument("--terminal-notifier", help="Executable terminal-notifier (saved for hooks)")
     parser.add_argument("--replace-source-link", action="store_true", help="Repoint an existing source symlink to this checkout")
     parser.add_argument("--replace-paiw-notify", action="store_true", help="Back up and remove only the legacy PAIW Codex completion hook")
