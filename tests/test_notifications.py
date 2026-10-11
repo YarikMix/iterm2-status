@@ -216,6 +216,19 @@ class Notifications(unittest.TestCase):
         self.hook('Stop')
         self.assertEqual(len(self.notices(expected=1)), 1)
 
+    def test_hook_fallback_skips_version_manager_shim(self):
+        self.settings.write_text(json.dumps({'notifications': True, 'terminal_notifier': str(self.data / 'gone/terminal-notifier')}))
+        shims = self.data / 'shims'
+        shims.mkdir()
+        manager = shims / 'mise'
+        manager.write_text('#!/bin/sh\nexit 1\n')
+        manager.chmod(0o700)
+        (shims / 'terminal-notifier').symlink_to(manager)
+        self.env = dict(self.env, PATH=str(shims) + os.pathsep + self.env['PATH'])
+        self.hook('UserPromptSubmit')
+        self.hook('Stop')
+        self.assertEqual(len(self.notices(expected=1)), 1)
+
     def test_hook_without_any_notifier_stays_silent(self):
         self.settings.write_text(json.dumps({'notifications': True, 'terminal_notifier': str(self.data / 'gone/terminal-notifier')}))
         (self.bin / 'terminal-notifier').unlink()

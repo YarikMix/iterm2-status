@@ -41,6 +41,20 @@ def executable(value):
     return str(Path(candidate).absolute()) if candidate else None
 
 
+def path_terminal_notifier(environ=None):
+    """First terminal-notifier in PATH that resolves to itself, not to a shim manager."""
+    environ = os.environ if environ is None else environ
+    for directory in environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / "terminal-notifier"
+        # mise and similar link the shim to their own binary; it cannot run here.
+        if (candidate.is_file() and os.access(candidate, os.X_OK)
+                and Path(os.path.realpath(candidate)).name == "terminal-notifier"):
+            return str(candidate.absolute())
+    return None
+
+
 def find_terminal_notifier(saved, environ=None, timeout=3):
     """The saved notifier if it still exists, else the first working one in PATH."""
     found = executable(saved)

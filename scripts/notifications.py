@@ -8,7 +8,7 @@ import sys
 import time
 import unicodedata
 
-from iterm_support import APP_DIRECTORIES, executable, load_settings
+from iterm_support import APP_DIRECTORIES, executable, load_settings, path_terminal_notifier
 
 LABELS = {'input': 'Нужен ответ', 'approval': 'Нужно разрешение', 'complete': 'Ответ готов'}
 
@@ -100,7 +100,7 @@ def notify(state, terminal, it2, deadline, claim):
     settings = load_settings()
     if settings.get('notifications') is not True:
         return
-    notifier = executable(settings.get('terminal_notifier')) or shutil.which('terminal-notifier')
+    notifier = executable(settings.get('terminal_notifier')) or path_terminal_notifier()
     osascript = shutil.which('osascript')
     if not notifier or not osascript or deadline - time.monotonic() < 0.1:
         return
